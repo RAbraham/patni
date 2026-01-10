@@ -1,0 +1,35 @@
+[project]
+name = "patni"
+version = "0.1.4"
+description = "Pipe like syntax"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+authors = [{ name = "Rajiv Abraham", email = "your.email@example.com" }]
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+ibis = ["ibis-framework[duckdb]>=9.0.0"]
+
+[build-system]
+requires = ["setuptools>=78.1.0", "wheel>=0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["patni"]
+
+[project.scripts]
+patni = "main:main"
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "ibis-framework[duckdb]>=9.0.0",
+    "pandas>=2.3.3",
+    "pytest>=9.0.2",
+]
