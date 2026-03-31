@@ -1,15 +1,18 @@
 [project]
 name = "patni"
-version = "0.1.4"
+version = "0.1.6"
 description = "Pipe like syntax"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "sspipe>=0.1.17",
+]
 authors = [{ name = "Rajiv Abraham", email = "your.email@example.com" }]
 license = { text = "MIT" }
 
 [project.optional-dependencies]
 ibis = ["ibis-framework[duckdb]>=9.0.0"]
+ray = ["ray>=2.9.0"]
 
 [build-system]
 requires = ["setuptools>=78.1.0", "wheel>=0.45.1"]

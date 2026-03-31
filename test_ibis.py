@@ -7,7 +7,9 @@ ibis = pytest.importorskip("ibis")
 
 from patni.ibis import (
     it, select, filter, group_by, agg, aggregate, order_by, limit,
-    mutate, distinct, join, head, drop, rename, IbisDeferred
+    mutate, distinct, join, head, drop, rename, IbisDeferred,
+    window, row_number, rank, dense_rank, lag, lead, ntile,
+    first_value, last_value
 )
 
 
@@ -484,3 +486,231 @@ class TestSubTree:
         result = (t1 >> pipeline)()
         assert len(result) == 2
         assert list(result["x"]) == [6, 5]  # descending by y
+
+
+class TestWindowFunctions:
+    """Test window functions with >> syntax."""
+
+    @pytest.fixture
+    def sales_table(self, con):
+        """Create a sales table with test data."""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03",
+                                    "2024-01-01", "2024-01-02"]),
+            "category": ["A", "A", "A", "B", "B"],
+            "amount": [100, 150, 200, 50, 75],
+        })
+        con.create_table("sales", df)
+        return con.table("sales")
+
+    @pytest.fixture
+    def scores_table(self, con):
+        """Create a scores table with ties for ranking tests."""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "name": ["Alice", "Bob", "Charlie", "Diana"],
+            "score": [100, 90, 90, 80],
+        })
+        con.create_table("scores", df)
+        return con.table("scores")
+
+    def test_row_number(self, sales_table):
+        """Test row_number window function."""
+        w = window(partition_by=it.category, order_by=it.date)
+
+        result = (
+            sales_table
+            >> mutate(row_num=row_number(w))
+            >> select(it.category, it.date, it.row_num)
+            >> order_by(it.category, it.row_num)
+        )()
+
+        # Category A: rows 0,1,2 (0-indexed)
+        a_rows = result[result["category"] == "A"]["row_num"].tolist()
+        assert a_rows == [0, 1, 2]
+
+        # Category B: rows 0,1 (0-indexed)
+        b_rows = result[result["category"] == "B"]["row_num"].tolist()
+        assert b_rows == [0, 1]
+
+    def test_rank_with_ties(self, scores_table):
+        """Test rank function with tie handling."""
+        w = window(order_by=it.score.desc())
+
+        result = (
+            scores_table
+            >> mutate(
+                ranking=rank(w),
+                dense_ranking=dense_rank(w),
+            )
+            >> order_by(it.score.desc())
+        )()
+
+        # rank: 0, 1, 1, 3 (0-indexed, gap after tie)
+        assert result["ranking"].tolist() == [0, 1, 1, 3]
+        # dense_rank: 0, 1, 1, 2 (0-indexed, no gap)
+        assert result["dense_ranking"].tolist() == [0, 1, 1, 2]
+
+    def test_lag_lead(self, sales_table):
+        """Test lag and lead functions."""
+        w = window(partition_by=it.category, order_by=it.date)
+
+        result = (
+            sales_table
+            >> mutate(
+                prev_amount=lag(it.amount, 1, w),
+                next_amount=lead(it.amount, 1, w),
+            )
+            >> filter(it.category == "A")
+            >> order_by(it.date)
+        )()
+
+        # First row has no previous (null)
+        import pandas as pd
+        assert pd.isna(result.iloc[0]["prev_amount"])
+
+        # Second row's previous is first row's amount (100)
+        assert result.iloc[1]["prev_amount"] == 100
+
+        # Last row has no next (null)
+        assert pd.isna(result.iloc[2]["next_amount"])
+
+        # Second row's next is third row's amount (200)
+        assert result.iloc[1]["next_amount"] == 200
+
+    def test_lag_with_default(self, sales_table):
+        """Test lag with default value."""
+        w = window(partition_by=it.category, order_by=it.date)
+
+        result = (
+            sales_table
+            >> mutate(prev_amount=lag(it.amount, 1, w, default=0))
+            >> filter(it.category == "A")
+            >> order_by(it.date)
+        )()
+
+        # First row uses default value 0
+        assert result.iloc[0]["prev_amount"] == 0
+
+    def test_running_total_with_window(self, sales_table):
+        """Test running sum with w(expr) syntax."""
+        # Need rows_between for cumulative aggregation
+        w = window(
+            partition_by=it.category,
+            order_by=it.date,
+            rows_between=(None, 0)  # unbounded preceding to current row
+        )
+
+        result = (
+            sales_table
+            >> mutate(running_total=w(it.amount.sum()))
+            >> filter(it.category == "A")
+            >> order_by(it.date)
+        )()
+
+        # Cumulative sums: 100, 250, 450
+        totals = result["running_total"].tolist()
+        assert totals == [100, 250, 450]
+
+    def test_running_average_with_window(self, sales_table):
+        """Test running average with w(expr) syntax."""
+        # Need rows_between for cumulative aggregation
+        w = window(
+            partition_by=it.category,
+            order_by=it.date,
+            rows_between=(None, 0)  # unbounded preceding to current row
+        )
+
+        result = (
+            sales_table
+            >> mutate(running_avg=w(it.amount.mean()))
+            >> filter(it.category == "A")
+            >> order_by(it.date)
+        )()
+
+        # Running averages: 100, 125, 150
+        avgs = result["running_avg"].tolist()
+        assert avgs == [100.0, 125.0, 150.0]
+
+    def test_ntile(self, sales_table):
+        """Test ntile bucket distribution."""
+        w = window(order_by=it.amount)
+
+        result = (
+            sales_table
+            >> mutate(quartile=ntile(4, w))
+            >> order_by(it.amount)
+        )()
+
+        # 5 rows into 4 buckets (0-indexed): 0,0,1,2,3 or similar distribution
+        quartiles = result["quartile"].tolist()
+        assert len(quartiles) == 5
+        assert min(quartiles) == 0
+        assert max(quartiles) == 3
+
+    def test_first_last_value(self, sales_table):
+        """Test first_value and last_value functions."""
+        w = window(partition_by=it.category, order_by=it.date)
+
+        result = (
+            sales_table
+            >> mutate(
+                first_amt=first_value(it.amount, w),
+            )
+            >> filter(it.category == "A")
+            >> order_by(it.date)
+        )()
+
+        # First value in category A is always 100
+        assert all(result["first_amt"] == 100)
+
+    def test_reusable_window_spec(self, sales_table):
+        """Test that window specs can be reused across multiple columns."""
+        w = window(partition_by=it.category, order_by=it.date)
+
+        result = (
+            sales_table
+            >> mutate(
+                row_num=row_number(w),
+                ranking=rank(w),
+                prev=lag(it.amount, 1, w),
+                running=w(it.amount.sum()),
+            )
+        )()
+
+        assert "row_num" in result.columns
+        assert "ranking" in result.columns
+        assert "prev" in result.columns
+        assert "running" in result.columns
+
+    def test_window_without_partition(self, sales_table):
+        """Test window with only order_by (no partition)."""
+        w = window(order_by=it.amount)
+
+        result = (
+            sales_table
+            >> mutate(global_rank=rank(w))
+            >> order_by(it.amount)
+        )()
+
+        # Global ranking by amount (0-indexed)
+        assert result["global_rank"].tolist() == [0, 1, 2, 3, 4]
+
+    def test_multiple_window_specs(self, sales_table):
+        """Test using different window specs in same query."""
+        w_category = window(partition_by=it.category, order_by=it.date)
+        w_global = window(order_by=it.amount)
+
+        result = (
+            sales_table
+            >> mutate(
+                category_rank=rank(w_category),
+                global_rank=rank(w_global),
+            )
+        )()
+
+        assert "category_rank" in result.columns
+        assert "global_rank" in result.columns
